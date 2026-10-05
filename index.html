@@ -163,15 +163,13 @@
               <th class="px-4 py-3">Referencia</th>
               <th class="px-4 py-3">Detalle / Descripción</th>
               <th class="px-4 py-3">Marca</th>
-              <th class="px-4 py-3">Sede</th>
-              <th class="px-4 py-3">Bodega</th>
               <th class="px-4 py-3 text-right">Cantidad</th>
               <th class="px-4 py-3 text-center">Tarifa IVA</th>
             </tr>
           </thead>
           <tbody id="tableBody" class="divide-y divide-slate-100 bg-white">
             <tr>
-              <td colspan="7" class="text-center py-8 text-slate-400">Cargando datos desde Google Sheets...</td>
+              <td colspan="5" class="text-center py-8 text-slate-400">Cargando datos desde Google Sheets...</td>
             </tr>
           </tbody>
         </table>
@@ -193,13 +191,26 @@
     let barChartInst = null;
     let donutChartInst = null;
 
+    // Helper Anti-XSS
+    function escapeHTML(str) {
+      return String(str).replace(/[&<>"']/g, function(m) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;'
+        }[m];
+      });
+    }
+
     async function loadDataFromGoogleSheets() {
       const icon = document.getElementById('refreshIcon');
       const tbody = document.getElementById('tableBody');
       
       if (icon) icon.classList.add('fa-spin');
       if (tbody) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando datos desde Google Sheets...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando datos desde Google Sheets...</td></tr>';
       }
 
       try {
@@ -242,11 +253,11 @@
           applyFilters();
         } else {
           console.error("Respuesta no válida de Apps Script:", rawData);
-          tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-red-500 font-semibold">Error al obtener los datos. Verifica que la respuesta de Apps Script sea un arreglo JSON válido.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-red-500 font-semibold">Error al obtener los datos. Verifica que la respuesta de Apps Script sea un arreglo JSON válido.</td></tr>';
         }
       } catch (error) {
         console.error("Error al obtener los datos:", error);
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-red-500 font-semibold">No se pudo conectar con Google Sheets. Verifica los permisos de acceso de Apps Script.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-red-500 font-semibold">No se pudo conectar con Google Sheets. Verifica los permisos de acceso de Apps Script.</td></tr>';
       } finally {
         if (icon) icon.classList.remove('fa-spin');
       }
@@ -260,10 +271,10 @@
       const selectMarca = document.getElementById('selectMarca');
 
       selectBodega.innerHTML = '<option value="">Todas las Bodegas Barranquilla</option>' + 
-        sedes.map(s => `<option value="${s}">${s}</option>`).join('');
+        sedes.map(s => `<option value="${escapeHTML(s)}">${escapeHTML(s)}</option>`).join('');
 
       selectMarca.innerHTML = '<option value="">Todas las Marcas</option>' + 
-        marcas.map(m => `<option value="${m}">${m}</option>`).join('');
+        marcas.map(m => `<option value="${escapeHTML(m)}">${escapeHTML(m)}</option>`).join('');
     }
 
     function applyFilters() {
@@ -314,7 +325,7 @@
       const tbody = document.getElementById('tableBody');
 
       if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-slate-400">No se encontraron registros para las bodegas de Barranquilla.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-slate-400">No se encontraron registros para las bodegas de Barranquilla.</td></tr>';
         return;
       }
 
@@ -326,13 +337,11 @@
 
         return `
           <tr class="hover:bg-slate-50 transition-colors">
-            <td class="px-4 py-3 font-semibold text-slate-700">${item.ref}</td>
-            <td class="px-4 py-3 font-medium text-slate-800">${item.detalle}</td>
+            <td class="px-4 py-3 font-semibold text-slate-700">${escapeHTML(item.ref)}</td>
+            <td class="px-4 py-3 font-medium text-slate-800">${escapeHTML(item.detalle)}</td>
             <td class="px-4 py-3">
-              <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium text-[11px]">${item.marca}</span>
+              <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium text-[11px]">${escapeHTML(item.marca)}</span>
             </td>
-            <td class="px-4 py-3 text-slate-600 font-medium">${item.sede}</td>
-            <td class="px-4 py-3 text-slate-500 font-mono text-[11px]">${item.consBodega}</td>
             <td class="px-4 py-3 text-right font-bold text-slate-800">${item.cantidad.toLocaleString()}</td>
             <td class="px-4 py-3 text-center">${ivaBadge}</td>
           </tr>
