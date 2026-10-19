@@ -199,4 +199,379 @@
     const API_URL = "https://script.google.com/macros/s/AKfycbw_7Kqupkzb8O2vCKZOGYq6Cx2MKZ-Gd5HZA6YGlnu8zAVFOUhWL0pRg_6Dp6CWwhCq/exec";
     
     // Lista explícita con solo las bodegas de Barranquilla
-    const BODE
+    const BODEGAS_PERMITIDAS = [
+      "BARRANQUILLA",
+      "B2B BARRANQUILLA"
+    ];
+
+    let inventoryData = [];
+    let currentFilteredData = [];
+    let barChartInst = null;
+    let donutChartInst = null;
+
+    // Helper Anti-XSS
+    function escapeHTML(str) {
+      return String(str).replace(/[&<>"']/g, function(m) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;'
+        }[m];
+      });
+    }
+
+    function processRawData(rawData) {
+      const icon = document.getElementById('refreshIcon');
+      const btnRefresh = document.getElementById('btnRefresh');
+      const btnText = document.getElementById('btnText');
+      const tbody = document.getElementById('tableBody');
+
+      if (Array.isArray(rawData)) {
+        inventoryData = rawData
+          .map(item => {
+            const cant = Number(item["Cantid"] !== undefined ? item["Cantid"] : (item["Cantidad"] || 0));
+            const bodegaVal = String(item["Bodega"] || item["CONS BODEG"] || "").trim();
+            const consBodegaVal = String(item["CONS BODEG"] || item["Bodega"] || "").trim();
+            const tarifaIvaVal = String(item["Tarifa de iva"] || item["Tarifa iva"] || "EXENTO").trim();
+
+            return {
+              ref: String(item["Referencia"] || item["Ref2"] || "000000"),
+              detalle: String(item["Detalle"] || ""),
+              marca: String(item["Marca"] || "OTRAS"),
+              codMarca: String(item["Cod.Ma"] || item["Cod.Marca"] || ""),
+              sede: bodegaVal,
+              consBodega: consBodegaVal,
+              cantidad: isNaN(cant) ? 0 : cant,
+              porcentajeIva: String(item["Porcentaje i"] || item["Porcentaje iva"] || "0"),
+              iva: tarifaIvaVal
+            };
+          })
+          .filter(item => BODEGAS_PERMITIDAS.some(b => b.toLowerCase() === item.sede.toLowerCase()));
+
+        populateSelectOptions();
+        applyFilters();
+      } else {
+        console.error("Respuesta no válida:", rawData);
+        if (tbody) {
+          tbody.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-red-500 font-semibold">Error al interpretar la respuesta de Apps Script.</td></tr>';
+        }
+      }
+
+      if (icon) icon.classList.remove('fa-spin');
+      if (btnRefresh) btnRefresh.disabled = false;
+      if (btnText) btnText.innerText = 'Actualizar Datos';
+    }
+
+    function loadDataFromGoogleSheets() {
+      const icon = document.getElementById('refreshIcon');
+      const btnRefresh = document.getElementById('btnRefresh');
+      const btnText = document.getElementById('btnText');
+      const tbody = document.getElementById('tableBody');
+      
+      if (icon) icon.classList.add('fa-spin');
+      if (btnRefresh) btnRefresh.disabled = true;
+      if (btnText) btnText.innerText = 'Cargando...';
+
+      if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando datos desde Google Sheets...</td></tr>';
+      }
+
+      // 1. Intentar fetch estándar con CORS
+      fetch(API_URL, { method: "GET", redirect: "follow" })
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+          return res.json();
+        })
+        .then(data => processRawData(data))
+        .catch(err => {
+          console.warn("Fetch falló por CORS/Red, ejecutando consulta JSONP alternativa...", err);
+          
+          // 2. Definir callback global para recibir los datos de Apps Script
+          window.gsCallback = function(data) {
+            processRawData(data);
+            delete window.gsCallback;
+          };
+
+          const oldScript = document.getElementById('dynamic_gs_script');
+          if (oldScript) oldScript.remove();
+
+          const script = document.createElement('script');
+          script.id = 'dynamic_gs_script';
+          // Inyectar parámetro callback en la URL
+          const delimiter = API_URL.includes('?') ? '&' : '?';
+          script.src = `${API_URL}${delimiter}callback=gsCallback`;
+          
+          script.onerror = function() {
+            if (tbody) {
+              tbody.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-red-500 font-semibold">No se pudo conectar con Google Sheets. Verifica que el Web App esté publicado como "Cualquier persona" (Anyone).</td></tr>';
+            }
+            if (icon) icon.classList.remove('fa-spin');
+            if (btnRefresh) btnRefresh.disabled = false;
+            if (btnText) btnText.innerText = 'Actualizar Datos';
+          };
+          
+          document.body.appendChild(script);
+        });
+    }
+
+    function populateSelectOptions() {
+      const sedes = [...new Set(inventoryData.map(d => d.sede).filter(Boolean))].sort();
+      const marcas = [...new Set(inventoryData.map(d => d.marca).filter(Boolean))].sort();
+
+      const selectBodega = document.getElementById('selectBodega');
+      const selectMarca = document.getElementById('selectMarca');
+
+      selectBodega.innerHTML = '<option value="">Todas las Bodegas Barranquilla</option>' + 
+        sedes.map(s => `<option value="${escapeHTML(s)}">${escapeHTML(s)}</option>`).join('');
+
+      selectMarca.innerHTML = '<option value="">Todas las Marcas</option>' + 
+        marcas.map(m => `<option value="${escapeHTML(m)}">${escapeHTML(m)}</option>`).join('');
+    }
+
+    function applyFilters() {
+      const selectedSede = document.getElementById('selectBodega').value;
+      const selectedMarca = document.getElementById('selectMarca').value;
+      const selectedIva = document.getElementById('selectIva').value;
+      const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
+
+      const filtered = inventoryData.filter(item => {
+        const matchSede = !selectedSede || item.sede === selectedSede;
+        const matchMarca = !selectedMarca || item.marca === selectedMarca;
+        
+        let matchIva = true;
+        if (selectedIva === "EXENTO") {
+          matchIva = item.iva === "1" || item.porcentajeIva === "0" || item.iva.toUpperCase().includes("EXENTO");
+        } else if (selectedIva === "GRAVADO") {
+          matchIva = item.iva === "19" || item.porcentajeIva === "19" || item.iva.toUpperCase().includes("19");
+        }
+
+        const matchSearch = !searchTerm || 
+          item.ref.toLowerCase().includes(searchTerm) || 
+          item.detalle.toLowerCase().includes(searchTerm) ||
+          item.marca.toLowerCase().includes(searchTerm) ||
+          item.sede.toLowerCase().includes(searchTerm) ||
+          item.consBodega.toLowerCase().includes(searchTerm);
+
+        return matchSede && matchMarca && matchIva && matchSearch;
+      });
+
+      currentFilteredData = filtered;
+      updateKPIs(filtered);
+      renderTable(filtered);
+      renderCharts(filtered);
+    }
+
+    function updateKPIs(data) {
+      const totalUnits = data.reduce((acc, curr) => acc + curr.cantidad, 0);
+      const totalRecords = data.length;
+      const activeSedes = new Set(data.map(d => d.sede).filter(Boolean)).size;
+      const registeredBrands = new Set(data.map(d => d.marca).filter(Boolean)).size;
+
+      document.getElementById('kpiUnidades').innerText = totalUnits.toLocaleString();
+      document.getElementById('kpiRegistros').innerText = totalRecords.toLocaleString();
+      document.getElementById('kpiSedes').innerText = activeSedes;
+      document.getElementById('kpiMarcas').innerText = registeredBrands;
+    }
+
+    function renderTable(data) {
+      const tbody = document.getElementById('tableBody');
+
+      if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-slate-400">No se encontraron registros para las bodegas de Barranquilla.</td></tr>';
+        return;
+      }
+
+      const rowsHtml = data.map(item => {
+        const isExento = item.iva === "1" || item.porcentajeIva === "0" || item.iva.toUpperCase().includes('EXENTO');
+        const ivaBadge = isExento 
+          ? '<span class="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 tracking-wide">EXENTO</span>'
+          : '<span class="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 tracking-wide">GRAVADO AL 19%</span>';
+
+        return `
+          <tr class="hover:bg-slate-50 transition-colors">
+            <td class="px-4 py-3 font-semibold text-slate-700">${escapeHTML(item.ref)}</td>
+            <td class="px-4 py-3 font-medium text-slate-800">${escapeHTML(item.detalle)}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium text-[11px]">${escapeHTML(item.marca)}</span>
+            </td>
+            <td class="px-4 py-3 font-medium text-slate-600">${escapeHTML(item.sede)}</td>
+            <td class="px-4 py-3 text-right font-bold text-slate-800">${item.cantidad.toLocaleString()}</td>
+            <td class="px-4 py-3 text-center">${ivaBadge}</td>
+          </tr>
+        `;
+      }).join('');
+
+      tbody.innerHTML = rowsHtml;
+    }
+
+    function renderCharts(data) {
+      const sedeGroup = {};
+      const marcaGroup = {};
+
+      data.forEach(d => {
+        if (d.sede) sedeGroup[d.sede] = (sedeGroup[d.sede] || 0) + d.cantidad;
+        if (d.marca) marcaGroup[d.marca] = (marcaGroup[d.marca] || 0) + d.cantidad;
+      });
+
+      const ctxBar = document.getElementById('barChart').getContext('2d');
+      if (barChartInst) barChartInst.destroy();
+      barChartInst = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+          labels: Object.keys(sedeGroup),
+          datasets: [{
+            label: 'Unidades',
+            data: Object.values(sedeGroup),
+            backgroundColor: '#4f46e5',
+            borderRadius: 8
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+
+      const ctxDonut = document.getElementById('donutChart').getContext('2d');
+      if (donutChartInst) donutChartInst.destroy();
+      donutChartInst = new Chart(ctxDonut, {
+        type: 'doughnut',
+        data: {
+          labels: Object.keys(marcaGroup),
+          datasets: [{
+            data: Object.values(marcaGroup),
+            backgroundColor: ['#4f46e5', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }
+        }
+      });
+    }
+
+    // Exportación a PDF ordenada por Marcas y de Menor a Mayor en Cantidad
+    function exportarPDF() {
+      if (!currentFilteredData || currentFilteredData.length === 0) {
+        alert("No hay información filtrada para exportar a PDF.");
+        return;
+      }
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF('p', 'mm', 'a4');
+
+      const marcasMap = {};
+      currentFilteredData.forEach(item => {
+        const marca = item.marca || 'OTRAS';
+        if (!marcasMap[marca]) marcasMap[marca] = [];
+        marcasMap[marca].push(item);
+      });
+
+      const marcasOrdenadas = Object.keys(marcasMap).sort();
+
+      doc.setFillColor(42, 43, 114);
+      doc.rect(0, 0, 210, 22, 'F');
+      
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(15);
+      doc.setTextColor(255, 255, 255);
+      doc.text("INVENTARIO BARRANQUILLA - DETALLE POR MARCAS", 14, 12);
+
+      doc.setFontSize(8);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(200, 210, 255);
+      doc.text(`Fecha de generación: ${new Date().toLocaleString()}`, 14, 18);
+
+      let startY = 28;
+
+      marcasOrdenadas.forEach((marca, index) => {
+        const productosMarca = marcasMap[marca].sort((a, b) => a.cantidad - b.cantidad);
+        const totalCantMarca = productosMarca.reduce((acc, curr) => acc + curr.cantidad, 0);
+
+        doc.setFontSize(11);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(42, 43, 114);
+        doc.text(`MARCA: ${marca.toUpperCase()} (${productosMarca.length} Regs. | ${totalCantMarca.toLocaleString()} Unids.)`, 14, startY);
+
+        const tableBody = productosMarca.map(p => {
+          const isExento = p.iva === "1" || p.porcentajeIva === "0" || p.iva.toUpperCase().includes('EXENTO');
+          return [
+            p.ref,
+            p.detalle,
+            p.sede,
+            p.cantidad.toLocaleString(),
+            isExento ? "EXENTO" : "GRAVADO 19%"
+          ];
+        });
+
+        doc.autoTable({
+          startY: startY + 3,
+          head: [['Referencia', 'Detalle / Descripción', 'Sede / Bodega', 'Cantidad', 'Tarifa IVA']],
+          body: tableBody,
+          theme: 'striped',
+          headStyles: {
+            fillColor: [79, 70, 229],
+            textColor: 255,
+            fontSize: 8,
+            fontStyle: 'bold'
+          },
+          bodyStyles: {
+            fontSize: 7.5,
+            textColor: [51, 65, 85]
+          },
+          columnStyles: {
+            0: { cellWidth: 25, fontStyle: 'bold' },
+            1: { cellWidth: 'auto' },
+            2: { cellWidth: 32 },
+            3: { cellWidth: 22, halign: 'right', fontStyle: 'bold' },
+            4: { cellWidth: 28, halign: 'center' }
+          },
+          margin: { left: 14, right: 14 }
+        });
+
+        startY = doc.lastAutoTable.finalY + 8;
+
+        if (startY > 270 && index < marcasOrdenadas.length - 1) {
+          doc.addPage();
+          startY = 20;
+        }
+      });
+
+      const totalGlobalUnidades = currentFilteredData.reduce((acc, curr) => acc + curr.cantidad, 0);
+      if (startY > 260) {
+        doc.addPage();
+        startY = 20;
+      }
+
+      doc.setDrawColor(200, 200, 200);
+      doc.line(14, startY, 196, startY);
+
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(30, 41, 59);
+      doc.text(`TOTAL GENERAL BARRANQUILLA: ${currentFilteredData.length.toLocaleString()} Registros | ${totalGlobalUnidades.toLocaleString()} Unidades Totales`, 14, startY + 6);
+
+      doc.save(`Inventario_Barranquilla_${new Date().toISOString().slice(0,10)}.pdf`);
+    }
+
+    function clearFilters() {
+      document.getElementById('selectBodega').value = '';
+      document.getElementById('selectMarca').value = '';
+      document.getElementById('selectIva').value = '';
+      document.getElementById('searchInput').value = '';
+      applyFilters();
+    }
+
+    function refreshData() {
+      loadDataFromGoogleSheets();
+    }
+
+    document.addEventListener('DOMContentLoaded', loadDataFromGoogleSheets);
+  </script>
+</body>
+</html>
